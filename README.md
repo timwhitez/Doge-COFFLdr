@@ -1,6 +1,6 @@
-# Doge-CoffLdr
+# Doge-COFFLdr
 
-# Loads Coff
+# Loads COFF
 * Ported to go
 * more opsec
 * support BeaconOutput
