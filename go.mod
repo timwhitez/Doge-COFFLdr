@@ -1,4 +1,4 @@
-module github.com/timwhitez/Doge-CoffLdr
+module github.com/timwhitez/Doge-COFFLdr
 
 go 1.19
 
