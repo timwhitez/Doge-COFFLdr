@@ -5,7 +5,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/latortuga71/GoCoffLdr/pkg/coff"
+	"github.com/timwhitez/Doge-CoffLdr/pkg/coff"
 )
 
 func main() {

@@ -134,6 +134,18 @@ func VirtualAlloc(lpAddress uintptr, dwSize uint32, allocationType uint32, flPro
 	return lpBaseAddress, nil
 }
 
+func VirtualProtect(lpAddress uintptr, dwSize uint32, flNewProtect uint32, lpflOldProtect unsafe.Pointer) (uintptr, error) {
+	ret, _, err := pVirtualProtect.Call(
+		lpAddress,
+		uintptr(dwSize),
+		uintptr(flNewProtect),
+		uintptr(lpflOldProtect))
+	if ret == 0 {
+		return 0, err
+	}
+	return ret, nil
+}
+
 func ReadProcessMemory(hProcess syscall.Handle, lpBaseAddress uintptr, lpBuffer uintptr, nSize uint32, lpNumberOfBytesRead *uint32) (bool, error) {
 	ok, _, err := pReadProcessMemory.Call(
 		uintptr(hProcess),

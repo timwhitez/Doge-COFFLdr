@@ -1,11 +1,5 @@
 package coff
 
-/*
-
- credits: COFFLoader (by Kevin Haubris/@kev169)
- ported to golang. For sektor 7 advanced malware course @rez0h
-
-*/
 import (
 	"encoding/binary"
 	"fmt"
@@ -14,7 +8,8 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/latortuga71/GoCoffLdr/pkg/winapi"
+	"github.com/timwhitez/Doge-CoffLdr/pkg/beacon"
+	"github.com/timwhitez/Doge-CoffLdr/pkg/winapi"
 )
 
 const (
@@ -103,7 +98,7 @@ type COFF_SYM_ADDRESS struct {
 	GOTAddress      uint64
 }
 
-var debugging bool = true
+var debugging bool = false
 
 func DebugPrint(args ...interface{}) {
 	if !debugging {
@@ -115,6 +110,8 @@ func DebugPrint(args ...interface{}) {
 }
 
 func ParseCoff(coff []byte) {
+	var sectionMapping []uintptr
+
 	// parse header
 	coffHdrPtr := (*COFF_FILE_HEADER)(unsafe.Pointer(&coff[0]))
 	headerOffset := unsafe.Sizeof(COFF_FILE_HEADER{})
@@ -162,22 +159,15 @@ func ParseCoff(coff []byte) {
 		memorySections.NumberOfRelocations = coffSectionPtr.NumberOfRelocations
 		memorySections.Characteristics = coffSectionPtr.Characteristics
 		memorySections.InMemorySize = memorySections.SizeOfRawData + (0x1000 - memorySections.SizeOfRawData%0x1000)
-		// check if needs to be executable
-		if memorySections.Characteristics&IMAGE_SCN_CNT_CODE != 0 {
-			memorySections.InMemoryAddress, err = winapi.VirtualAlloc(0, memorySections.InMemorySize, winapi.MEM_COMMIT|winapi.MEM_TOP_DOWN, winapi.PAGE_READWRITE)
-			if err != nil {
-				log.Fatal(err)
-			}
-		}
-		memorySections.InMemoryAddress, err = winapi.VirtualAlloc(0, memorySections.InMemorySize, winapi.MEM_COMMIT|winapi.MEM_TOP_DOWN, winapi.PAGE_EXECUTE_READWRITE)
+
+		memorySections.InMemoryAddress, err = winapi.VirtualAlloc(0, memorySections.InMemorySize, winapi.MEM_COMMIT|winapi.MEM_TOP_DOWN, winapi.PAGE_READWRITE)
 		if err != nil {
 			log.Fatal(err)
 		}
-		var wrote uint32
-		success, err := winapi.WriteProcessMemory(syscall.Handle(winapi.GetCurrentProcess()), memorySections.InMemoryAddress, uintptr(unsafe.Pointer(&coff[0]))+uintptr(coffSectionPtr.PointerToRawData), coffSectionPtr.SizeOfRawData, &wrote)
-		if !success {
-			log.Fatal(err)
-		}
+		sectionMapping = append(sectionMapping, memorySections.InMemoryAddress)
+
+		beacon.Memcpy(uintptr(unsafe.Pointer(&coff[0]))+uintptr(coffSectionPtr.PointerToRawData), memorySections.InMemoryAddress, uintptr(coffSectionPtr.SizeOfRawData))
+
 		if memorySections.NumberOfRelocations != 0 {
 			// print relocation table
 			for i := 0; i < int(memorySections.NumberOfRelocations); i++ {
@@ -188,8 +178,10 @@ func ParseCoff(coff []byte) {
 				DebugPrint("Type 0x%.5x\n", coffRelocPtr.Type)
 			}
 		}
+
 		// increase memory sections pointer
 		memorySections = (*COFF_MEM_SECTION)(unsafe.Pointer(uintptr(unsafe.Pointer(memorySections)) + unsafe.Sizeof(COFF_MEM_SECTION{})))
+
 	}
 	/// allocate memory for symbol table
 	numSymbols := coffHdrPtr.NumberOfSymbols
@@ -275,26 +267,17 @@ func ParseCoff(coff []byte) {
 				where := memorySectionPtr.InMemoryAddress + uintptr(coffRelocPtr.VirtualAddress)
 				offset64 := uint64(where)
 				what64 := (*COFF_SYM_ADDRESS)(unsafe.Pointer(memSymbolsBaseAddress+uintptr(unsafe.Sizeof(COFF_SYM_ADDRESS{})*uintptr(coffRelocPtr.SymbolTableIndex)))).InMemoryAddress + offset64
-				ok, err := winapi.WriteProcessMemory(syscall.Handle(winapi.GetCurrentProcess()), where, uintptr(unsafe.Pointer(&what64)), 8, nil)
-				if !ok {
-					log.Fatal(err)
-				}
+				beacon.Memcpy(uintptr(unsafe.Pointer(&what64)), where, 8)
 				break
 			case 0x3:
 				where := memorySectionPtr.InMemoryAddress + uintptr(coffRelocPtr.VirtualAddress)
 				var offset32 [4]byte
-				ok, err := winapi.ReadProcessMemory(syscall.Handle(winapi.GetCurrentProcess()), where, uintptr(unsafe.Pointer(&offset32[0])), 4, nil)
-				if !ok {
-					log.Fatal(err)
-				}
+				beacon.Memcpy(where, uintptr(unsafe.Pointer(&offset32[0])), 4)
 				offset32Num := binary.LittleEndian.Uint32(offset32[:])
 				var what3232 uint32
 				what32 := uint32(offset32Num) + uint32((*COFF_SYM_ADDRESS)(unsafe.Pointer(memSymbolsBaseAddress+uintptr(unsafe.Sizeof(COFF_SYM_ADDRESS{})*uintptr(coffRelocPtr.SymbolTableIndex)))).InMemoryAddress) - uint32(where+4)
 				what3232 = uint32(what32)
-				ok, err = winapi.WriteProcessMemory(syscall.Handle(winapi.GetCurrentProcess()), where, uintptr(unsafe.Pointer(&what3232)), 4, nil)
-				if !ok {
-					log.Fatal(err)
-				}
+				beacon.Memcpy(uintptr(unsafe.Pointer(&what3232)), where, 4)
 				DebugPrint("0x%x\n", where)
 				DebugPrint("offset32 %d\n", binary.LittleEndian.Uint32(offset32[:]))
 				DebugPrint("what32 0x%x\n", what3232)
@@ -302,10 +285,7 @@ func ParseCoff(coff []byte) {
 			case 0x4:
 				where := memorySectionPtr.InMemoryAddress + uintptr(coffRelocPtr.VirtualAddress)
 				var offset32 [4]byte
-				ok, err := winapi.ReadProcessMemory(syscall.Handle(winapi.GetCurrentProcess()), where, uintptr(unsafe.Pointer(&offset32[0])), 4, nil)
-				if !ok {
-					log.Fatal(err)
-				}
+				beacon.Memcpy(where, uintptr(unsafe.Pointer(&offset32[0])), 4)
 				offset32Num := binary.LittleEndian.Uint32(offset32[:])
 				var what3232 uint32
 				if (*COFF_SYM_ADDRESS)(unsafe.Pointer(memSymbolsBaseAddress+uintptr(unsafe.Sizeof(COFF_SYM_ADDRESS{})*uintptr(coffRelocPtr.SymbolTableIndex)))).GOTAddress != 0 {
@@ -322,27 +302,18 @@ func ParseCoff(coff []byte) {
 				DebugPrint("where 0x%x\n", where)
 				DebugPrint("offset32 %d\n", binary.LittleEndian.Uint32(offset32[:]))
 				DebugPrint("what32 0x%x\n", what3232)
-				ok, err = winapi.WriteProcessMemory(syscall.Handle(winapi.GetCurrentProcess()), where, uintptr(unsafe.Pointer(&what3232)), 4, nil)
-				if !ok {
-					log.Fatal(err)
-				}
+				beacon.Memcpy(uintptr(unsafe.Pointer(&what3232)), where, 4)
 				break
 			case 0x8:
 				//untested
 				where := memorySectionPtr.InMemoryAddress + uintptr(coffRelocPtr.VirtualAddress)
 				var offset32 [4]byte
-				ok, err := winapi.ReadProcessMemory(syscall.Handle(winapi.GetCurrentProcess()), where, uintptr(unsafe.Pointer(&offset32[0])), 4, nil)
-				if !ok {
-					log.Fatal(err)
-				}
+				beacon.Memcpy(where, uintptr(unsafe.Pointer(&offset32[0])), 4)
 				offset32Num := binary.LittleEndian.Uint32(offset32[:])
 				var what3232 uint32
 				what32 := uint32(offset32Num) + uint32((*COFF_SYM_ADDRESS)(unsafe.Pointer(memSymbolsBaseAddress+uintptr(unsafe.Sizeof(COFF_SYM_ADDRESS{})*uintptr(coffRelocPtr.SymbolTableIndex)))).InMemoryAddress) - uint32(where+4+4)
 				what3232 = uint32(what32)
-				ok, err = winapi.WriteProcessMemory(syscall.Handle(winapi.GetCurrentProcess()), where, uintptr(unsafe.Pointer(&what3232)), 4, nil)
-				if !ok {
-					log.Fatal(err)
-				}
+				beacon.Memcpy(uintptr(unsafe.Pointer(&what3232)), where, 4)
 				DebugPrint("0x%x\n", where)
 				DebugPrint("offset32 %d\n", binary.LittleEndian.Uint32(offset32[:]))
 				DebugPrint("what32 0x%x\n", what3232)
@@ -355,14 +326,53 @@ func ParseCoff(coff []byte) {
 		}
 	}
 	//time.Sleep(time.Second * 10)
-	fmt.Println("Relocations done")
+
+	ProtectionFlags := [8]uint32{
+		0x01,                           // not writeable, not readable, not executable
+		0x10,                           // not writeable, not readable, executable
+		syscall.PAGE_READONLY,          // not writeable, readable, not executable
+		syscall.PAGE_EXECUTE_READ,      // not writeable, readable, executable
+		syscall.PAGE_WRITECOPY,         // writeable, not readable, not executable
+		syscall.PAGE_EXECUTE_WRITECOPY, // writeable, not readable, executable
+		syscall.PAGE_READWRITE,         // writeable, readable, not executable
+		syscall.PAGE_EXECUTE_READWRITE, // writeable, readable, executable
+	}
+
+	for counter := 0; counter < int(coffHdrPtr.NumberOfSections); counter++ {
+		memorySectionPtr := (*COFF_MEM_SECTION)(unsafe.Pointer(uintptr(unsafe.Pointer(memorySections)) + uintptr(unsafe.Sizeof(COFF_MEM_SECTION{})*uintptr(counter))))
+		if memorySectionPtr.SizeOfRawData > 0 {
+			protect_index := memorySectionPtr.Characteristics >> 29
+			protect := ProtectionFlags[protect_index]
+			if (memorySectionPtr.Characteristics & IMAGE_SCN_MEM_NOT_CACHED) != 0 {
+				protect |= 0x200
+			}
+			var prot uint32
+			_, err = winapi.VirtualProtect(sectionMapping[counter], memorySectionPtr.SizeOfRawData, protect, unsafe.Pointer(&prot))
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+	}
+
+	var prot uint32
+	_, err = winapi.VirtualProtect(got, 2048, winapi.PAGE_EXECUTE_READ, unsafe.Pointer(&prot))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	DebugPrint("Relocations done")
 	syscall.Syscall(entryPoint, 0, 0, 0, 0)
+
+	var outdataSize = 0
+	outdata := beacon.BeaconGetOutputData(&outdataSize)
+	if outdata != "" {
+		fmt.Printf("Outdata Below:\n\n%s\n", outdata)
+	}
 	/*_, err = winapi.CreateThread(0, 0, entryPoint, 0, 0, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
 	*/
-	//fmt.Println("TEST")
 }
 
 func trimstr(old string) string {
@@ -402,6 +412,18 @@ func ResolveSymbols(GOT uintptr, memSymbolsBaseAddress uintptr, nSymbols uint32,
 			memSymbols = (*COFF_SYM_ADDRESS)(unsafe.Pointer(uintptr(unsafe.Pointer(memSymbols)) + unsafe.Sizeof(COFF_SYM_ADDRESS{})))
 			continue
 		}
+
+		funcPtr, inter := beacon.InternalFunctions(strSymbol)
+		if inter {
+			memSymbols.InMemoryAddress = uint64(funcPtr)
+			DebugPrint("0x%x\n", memSymbols.InMemoryAddress)
+			beacon.Memcpy(uintptr(unsafe.Pointer(&memSymbols.InMemoryAddress)), GOT+(uintptr(GOTIdx)*8), 8)
+			memSymbols.GOTAddress = uint64(GOT + (uintptr(GOTIdx * 8))) //uint64((GOT + (uintptr(GOTIdx) * 8)))
+			DebugPrint("0x%x\n", memSymbols.GOTAddress)
+			GOTIdx++
+			memSymbols = (*COFF_SYM_ADDRESS)(unsafe.Pointer(uintptr(unsafe.Pointer(memSymbols)) + unsafe.Sizeof(COFF_SYM_ADDRESS{})))
+			continue
+		}
 		if strings.Contains(strSymbol, "imp_") {
 			if !strings.Contains(strSymbol, "$") {
 				dllName = "kernel32"
@@ -417,7 +439,6 @@ func ResolveSymbols(GOT uintptr, memSymbolsBaseAddress uintptr, nSymbols uint32,
 			if err != nil {
 				log.Fatal(err)
 			}
-			log.Printf("Library Handle 0x%x\n", lib)
 			if lib != 0 {
 				funcAddress, err := syscall.GetProcAddress(lib, funcName)
 				if funcAddress == 0 {
@@ -430,11 +451,7 @@ func ResolveSymbols(GOT uintptr, memSymbolsBaseAddress uintptr, nSymbols uint32,
 				DebugPrint("0x%x\n", uint64(funcAddress))
 				memSymbols.InMemoryAddress = uint64(funcAddress)
 				DebugPrint("0x%x\n", memSymbols.InMemoryAddress)
-				var wrote uint32
-				ok, err := winapi.WriteProcessMemory(syscall.Handle(winapi.GetCurrentProcess()), GOT+(uintptr(GOTIdx)*8), uintptr(unsafe.Pointer(&memSymbols.InMemoryAddress)), 8, &wrote)
-				if !ok {
-					log.Fatal(err, wrote)
-				}
+				beacon.Memcpy(uintptr(unsafe.Pointer(&memSymbols.InMemoryAddress)), GOT+(uintptr(GOTIdx)*8), 8)
 				memSymbols.GOTAddress = uint64(GOT + (uintptr(GOTIdx * 8))) //uint64((GOT + (uintptr(GOTIdx) * 8)))
 				DebugPrint("0x%x\n", memSymbols.GOTAddress)
 				GOTIdx++
