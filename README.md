@@ -1,7 +1,10 @@
-# GoCOFFLdr
+# Doge-CoffLdr
 
 # Loads Coff
 * Ported to go
+* more opsec
+* support BeaconOutput
+* support other Beacon functions(todo)
 
 # Credits
 COFFLoader Code (by Kevin Haubris/@kev169)
