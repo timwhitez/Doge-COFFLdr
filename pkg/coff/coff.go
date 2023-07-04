@@ -8,8 +8,8 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/timwhitez/Doge-CoffLdr/pkg/beacon"
-	"github.com/timwhitez/Doge-CoffLdr/pkg/winapi"
+	"github.com/timwhitez/Doge-COFFLdr/pkg/beacon"
+	"github.com/timwhitez/Doge-COFFLdr/pkg/winapi"
 )
 
 const (
