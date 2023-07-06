@@ -2,14 +2,15 @@ package coff
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
-	"log"
+	"io/ioutil"
 	"strings"
 	"syscall"
 	"unsafe"
 
-	"github.com/timwhitez/Doge-COFFLdr/pkg/beacon"
-	"github.com/timwhitez/Doge-COFFLdr/pkg/winapi"
+	"github.com/timwhitez/Doge-CoffLdr/pkg/beacon"
+	"github.com/timwhitez/Doge-CoffLdr/pkg/winapi"
 )
 
 const (
@@ -98,7 +99,7 @@ type COFF_SYM_ADDRESS struct {
 	GOTAddress      uint64
 }
 
-var debugging bool = false
+var debugging bool = true
 
 func DebugPrint(args ...interface{}) {
 	if !debugging {
@@ -109,7 +110,62 @@ func DebugPrint(args ...interface{}) {
 	fmt.Printf(arg1Str, args[1:]...)
 }
 
-func ParseCoff(coff []byte) {
+func LoadAndRun(coff_data []byte, argsBytes []byte) (string, error) {
+
+	var (
+		argsA          []BofArgs
+		arguments_data []byte
+		argsPtr        uintptr
+		arguments_size int
+		e              error
+	)
+
+	bofEntry := "go"
+
+	if argsBytes != nil {
+		argStr := strings.ReplaceAll(string(argsBytes), `\`, `\\`)
+
+		DebugPrint(argStr)
+		err := json.Unmarshal([]byte(argStr), &argsA)
+		if err != nil {
+			return "", err
+		}
+
+		for i, a := range argsA {
+			switch a.ArgType {
+			case "binary":
+				f := fmt.Sprintf("%v", a.Value)
+				argsA[i].Value, err = ioutil.ReadFile(f)
+				if err != nil {
+					return "", err
+				}
+			}
+		}
+
+		arguments_data, arguments_size, e = ParseArgs(argsA)
+		if e != nil {
+			return "", e
+		}
+		argsPtr = uintptr(unsafe.Pointer(&arguments_data[0]))
+	} else {
+		argsPtr = 0
+		arguments_size = 0
+	}
+
+	output, err := RunCOFF(coff_data, argsPtr, arguments_size, bofEntry)
+	if err != nil {
+		return "", err
+	}
+
+	utf8, err := beacon.GbkToUtf8([]byte(output))
+	if err != nil {
+		utf8 = []byte(output)
+	}
+
+	return string(utf8), nil
+}
+
+func RunCOFF(coff []byte, argumentdata uintptr, argumentSize int, bofEntryPoint string) (string, error) {
 	var sectionMapping []uintptr
 
 	// parse header
@@ -132,7 +188,7 @@ func ParseCoff(coff []byte) {
 	// allocate memory for all sections here
 	baseAddressOfMemory, err = winapi.VirtualAlloc(0, uint32(totalSectionSize), winapi.MEM_COMMIT|winapi.MEM_RESERVE, winapi.PAGE_READWRITE)
 	if err != nil {
-		log.Fatal(err)
+		return "", err
 	}
 	memorySections := (*COFF_MEM_SECTION)(unsafe.Pointer(baseAddressOfMemory))
 	// parse sections
@@ -162,7 +218,7 @@ func ParseCoff(coff []byte) {
 
 		memorySections.InMemoryAddress, err = winapi.VirtualAlloc(0, memorySections.InMemorySize, winapi.MEM_COMMIT|winapi.MEM_TOP_DOWN, winapi.PAGE_READWRITE)
 		if err != nil {
-			log.Fatal(err)
+			return "", err
 		}
 		sectionMapping = append(sectionMapping, memorySections.InMemoryAddress)
 
@@ -188,7 +244,7 @@ func ParseCoff(coff []byte) {
 	symAddrSize := uint32(unsafe.Sizeof(COFF_SYM_ADDRESS{}))
 	memSymbolsBaseAddress, err := winapi.VirtualAlloc(0, symAddrSize*numSymbols, winapi.MEM_COMMIT|winapi.MEM_RESERVE, winapi.PAGE_READWRITE)
 	if err != nil {
-		log.Fatal(err)
+		return "", err
 	}
 	memSymbols := (*COFF_SYM_ADDRESS)(unsafe.Pointer(memSymbolsBaseAddress))
 	// got start of symbol table
@@ -235,11 +291,15 @@ func ParseCoff(coff []byte) {
 	}
 	got, err := winapi.VirtualAlloc(0, 2048, winapi.MEM_COMMIT|winapi.MEM_RESERVE|winapi.MEM_TOP_DOWN, winapi.PAGE_READWRITE)
 	if err != nil {
-		log.Fatal(err)
+		return "", err
 	}
 
 	// resolve symbols
-	entryPoint := ResolveSymbols(got, memSymbolsBaseAddress, numSymbols, baseAddressOfMemory)
+	entryPoint, e := ResolveSymbols(got, memSymbolsBaseAddress, numSymbols, baseAddressOfMemory, bofEntryPoint)
+	if e != nil {
+		return "", e
+	}
+
 	DebugPrint("resolved symbols %x\n", entryPoint)
 	for i := 0; i < int(numSymbols); i++ {
 		memSymbols = (*COFF_SYM_ADDRESS)(unsafe.Pointer(uintptr(unsafe.Pointer(memSymbolsBaseAddress)) + unsafe.Sizeof(COFF_SYM_ADDRESS{})*uintptr(i)))
@@ -320,7 +380,7 @@ func ParseCoff(coff []byte) {
 				break
 			default:
 				DebugPrint("Reloc is not supported!\n")
-				log.Fatal(fmt.Errorf("Relocation Type Not Supported"))
+				return "", fmt.Errorf("Relocation Type Not Supported")
 			}
 			//time.Sleep(time.Second * 1000)
 		}
@@ -349,7 +409,7 @@ func ParseCoff(coff []byte) {
 			var prot uint32
 			_, err = winapi.VirtualProtect(sectionMapping[counter], memorySectionPtr.SizeOfRawData, protect, unsafe.Pointer(&prot))
 			if err != nil {
-				log.Fatal(err)
+				return "", err
 			}
 		}
 	}
@@ -357,20 +417,18 @@ func ParseCoff(coff []byte) {
 	var prot uint32
 	_, err = winapi.VirtualProtect(got, 2048, winapi.PAGE_EXECUTE_READ, unsafe.Pointer(&prot))
 	if err != nil {
-		log.Fatal(err)
+		return "", err
 	}
 
 	DebugPrint("Relocations done")
-	syscall.Syscall(entryPoint, 0, 0, 0, 0)
+	syscall.SyscallN(entryPoint, argumentdata, uintptr(argumentSize))
 
 	var outdataSize = 0
 	outdata := beacon.BeaconGetOutputData(&outdataSize)
-	if outdata != "" {
-		fmt.Printf("Outdata Below:\n\n%s\n", outdata)
-	}
+	return outdata, nil
 	/*_, err = winapi.CreateThread(0, 0, entryPoint, 0, 0, nil)
 	if err != nil {
-		log.Fatal(err)
+		return "",err
 	}
 	*/
 }
@@ -386,7 +444,7 @@ func trimstr(old string) string {
 	return new
 }
 
-func ResolveSymbols(GOT uintptr, memSymbolsBaseAddress uintptr, nSymbols uint32, memSectionsBaseAddress uintptr) uintptr {
+func ResolveSymbols(GOT uintptr, memSymbolsBaseAddress uintptr, nSymbols uint32, memSectionsBaseAddress uintptr, entryfunc string) (uintptr, error) {
 	GOTIdx := 0
 	memSymbols := (*COFF_SYM_ADDRESS)(unsafe.Pointer(memSymbolsBaseAddress))
 	memorySections := (*COFF_MEM_SECTION)(unsafe.Pointer(memSectionsBaseAddress))
@@ -437,16 +495,16 @@ func ResolveSymbols(GOT uintptr, memSymbolsBaseAddress uintptr, nSymbols uint32,
 			//lib := winapi.LoadLibrary(string(dllName))
 			lib, err := syscall.LoadLibrary(dllName + ".dll")
 			if err != nil {
-				log.Fatal(err)
+				return 0, err
 			}
 			if lib != 0 {
 				funcAddress, err := syscall.GetProcAddress(lib, funcName)
 				if funcAddress == 0 {
-					log.Fatal(err)
+					return 0, err
 				}
 				//funcAddress := winapi.GetProcAddress(lib, funcName)
 				if funcAddress == 0 {
-					log.Fatal(fmt.Errorf("failed to get proc address"))
+					return 0, fmt.Errorf("failed to get proc address")
 				}
 				DebugPrint("0x%x\n", uint64(funcAddress))
 				memSymbols.InMemoryAddress = uint64(funcAddress)
@@ -460,7 +518,7 @@ func ResolveSymbols(GOT uintptr, memSymbolsBaseAddress uintptr, nSymbols uint32,
 			section = int(memSymbols.SectionNumber) - 1
 			movedPtr := (*COFF_MEM_SECTION)(unsafe.Pointer(uintptr(unsafe.Pointer(memorySections)) + uintptr((unsafe.Sizeof(COFF_MEM_SECTION{}) * uintptr(section)))))
 			memSymbols.InMemoryAddress = uint64(movedPtr.InMemoryAddress + uintptr(memSymbols.Value))
-			if strSymbol == "go" {
+			if strSymbol == entryfunc {
 				DebugPrint("Entry -> 0x%x\n", memSymbols.InMemoryAddress)
 				entryPoint = uintptr(memSymbols.InMemoryAddress)
 			}
@@ -468,7 +526,7 @@ func ResolveSymbols(GOT uintptr, memSymbolsBaseAddress uintptr, nSymbols uint32,
 		// move pointer
 		memSymbols = (*COFF_SYM_ADDRESS)(unsafe.Pointer(uintptr(unsafe.Pointer(memSymbols)) + unsafe.Sizeof(COFF_SYM_ADDRESS{})))
 	}
-	return entryPoint
+	return entryPoint, nil
 }
 
 func ReadMemUntilNull(start *byte) []byte {

@@ -1,11 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
 
-	"github.com/timwhitez/Doge-COFFLdr/pkg/coff"
+	"github.com/timwhitez/Doge-CoffLdr/pkg/coff"
 )
 
 func main() {
@@ -14,5 +15,18 @@ func main() {
 		log.Fatal(err)
 	}
 
-	coff.ParseCoff(rawCoff)
+	var config []byte
+
+	if len(os.Args) == 3 {
+		config, _ = ioutil.ReadFile(os.Args[2])
+	}
+
+	outdata, err := coff.LoadAndRun(rawCoff, config)
+
+	if outdata != "" {
+		fmt.Printf("Outdata Below:\n\n%s\n", outdata)
+	}
+	if err != nil {
+		fmt.Errorf("Error Msg:\n\n%s\n", err)
+	}
 }
