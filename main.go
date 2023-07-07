@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/timwhitez/Doge-CoffLdr/pkg/coff"
+	"github.com/timwhitez/Doge-COFFLdr/pkg/coff"
 )
 
 func main() {
