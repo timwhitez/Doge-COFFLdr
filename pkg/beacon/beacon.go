@@ -11,6 +11,8 @@ import (
 	"unsafe"
 )
 
+var Glob_Token uintptr
+
 // todo
 func InternalFunctions(funcname string) (uintptr, bool) {
 	var beaconfunc uintptr
@@ -45,7 +47,7 @@ func InternalFunctions(funcname string) (uintptr, bool) {
 	} else if strings.Contains(funcname, "BeaconOutput") {
 
 	} else if strings.Contains(funcname, "BeaconUseToken") {
-
+		beaconfunc = syscall.NewCallback(BeaconUseToken)
 	} else if strings.Contains(funcname, "BeaconRevertToken") {
 
 	} else if strings.Contains(funcname, "BeaconIsAdmin") {
@@ -82,6 +84,96 @@ var beaconCompatibilityOutput []byte
 var beaconCompatibilitySize int
 var beaconCompatibilityOffset int
 
+var (
+	advapi32                    = syscall.NewLazyDLL("advapi32.dll")
+	procImpersonateLoggedOnUser = advapi32.NewProc("ImpersonateLoggedOnUser")
+)
+
+func impersonateLoggedOnUser(token uintptr) bool {
+	r1, _, _ := procImpersonateLoggedOnUser.Call(token)
+	if r1 == 0 {
+		return false
+	}
+	return true
+}
+
+var (
+	procGetTokenInformation = advapi32.NewProc("GetTokenInformation")
+	procLookupAccountSid    = advapi32.NewProc("LookupAccountSidA")
+)
+
+// TokenUser struct
+type TOKEN_USER struct {
+	User syscall.SIDAndAttributes
+}
+
+func getTokenUsername(token uintptr) bool {
+	// 定义变量
+	var TokenUserInfo TOKEN_USER
+	var returned_tokinfo_length uint32
+	username_only := make([]byte, 256)
+	domainname_only := make([]byte, 256)
+	var usernameSize = uint32(unsafe.Sizeof(username_only))
+	var domainSize = uint32(unsafe.Sizeof(domainname_only))
+	var sidType uint32
+
+	// 调用GetTokenInformation
+	success, _, _ := procGetTokenInformation.Call(
+		token,
+		uintptr(syscall.TokenUser), // TokenUser
+		uintptr(unsafe.Pointer(&TokenUserInfo)),
+		4096,
+		uintptr(unsafe.Pointer(&returned_tokinfo_length)))
+	if success == 0 {
+		return false
+	}
+
+	// 调用LookupAccountSid
+	success, _, _ = procLookupAccountSid.Call(
+		0,
+		uintptr(unsafe.Pointer(TokenUserInfo.User.Sid)),
+		uintptr(unsafe.Pointer(&username_only[0])),
+		uintptr(unsafe.Pointer(&usernameSize)),
+		uintptr(unsafe.Pointer(&domainname_only[0])),
+		uintptr(unsafe.Pointer(&domainSize)),
+		uintptr(unsafe.Pointer(&sidType)))
+	if success == 0 {
+		return false
+	}
+
+	fmt.Printf("%s\\%s\n", string(domainname_only[:domainSize]), string(username_only[:usernameSize]))
+
+	return true
+}
+
+func BeaconUseToken(token uintptr) uintptr {
+	if Glob_Token != 0 {
+		syscall.CloseHandle(syscall.Handle(Glob_Token))
+	}
+	Glob_Token = 0
+
+	modadvapi32 := syscall.NewLazyDLL("advapi32.dll")
+	procRevertToSelf := modadvapi32.NewProc("RevertToSelf")
+	procRevertToSelf.Call()
+
+	if !impersonateLoggedOnUser(token) {
+		return 0
+	}
+
+	DuplicateTokenEx := syscall.NewLazyDLL("Advapi32.dll").NewProc("DuplicateTokenEx")
+	DuplicateTokenEx.Call(token, 0x02000000, 0, 3, 1, uintptr(unsafe.Pointer(&Glob_Token)))
+	if Glob_Token == 0 {
+		return 0
+	}
+	if !impersonateLoggedOnUser(Glob_Token) {
+		return 0
+	}
+	if !getTokenUsername(Glob_Token) {
+		return 0
+	}
+	return 1
+}
+
 func BeaconDataShort(parserPtr uintptr) uintptr {
 	parser := (*Datap)(unsafe.Pointer(parserPtr))
 	if parser.length < 2 {
@@ -95,29 +187,39 @@ func BeaconDataShort(parserPtr uintptr) uintptr {
 	return uintptr(retvalue)
 }
 
-func BytePtrToString(p *byte) string {
-	if p == nil {
+func byteSliceToString(bval []byte) string {
+	for i := range bval {
+		if bval[i] == 0 {
+			return string(bval[:i])
+		}
+	}
+	return string(bval[:])
+}
+
+func BytePtrToString(r uintptr) string {
+	if r == 0 {
 		return ""
 	}
-	if *p == 0 {
+	if r == 0xffffffff {
 		return ""
 	}
-
-	// Find NUL terminator.
-	n := 0
-	for ptr := unsafe.Pointer(p); *(*byte)(ptr) != 0; n++ {
-		ptr = unsafe.Pointer(uintptr(ptr) + 1)
+	if r == 0x1 {
+		return ""
 	}
-
-	return string(unsafe.Slice(p, n))
+	bval := (*[1 << 30]byte)(unsafe.Pointer(r))
+	return byteSliceToString(bval[:])
 }
 
 // 未能实现可变参数,仅支持4参数以内
 func BeaconPrintf(t int, ptr uintptr, a uintptr, b uintptr) uintptr {
 	var length int
-	bufstr := BytePtrToString((*byte)(unsafe.Pointer(ptr)))
+	bufstr := BytePtrToString((uintptr)(unsafe.Pointer(ptr)))
 
-	bufstr = fmt.Sprintf(bufstr, BytePtrToString((*byte)(unsafe.Pointer(a))), BytePtrToString((*byte)(unsafe.Pointer(b))))
+	a1 := BytePtrToString((uintptr)(unsafe.Pointer(a)))
+
+	b1 := BytePtrToString((uintptr)(unsafe.Pointer(b)))
+
+	bufstr = fmt.Sprintf(bufstr, a1, b1)
 
 	length = len(bufstr)
 	data := make([]byte, length)

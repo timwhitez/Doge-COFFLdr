@@ -99,7 +99,14 @@ type COFF_SYM_ADDRESS struct {
 	GOTAddress      uint64
 }
 
-var debugging bool = true
+var debugging bool = false
+
+func SetGlobToken(token uintptr) {
+	beacon.Glob_Token = token
+}
+func GetGlobToken() uintptr {
+	return beacon.Glob_Token
+}
 
 func DebugPrint(args ...interface{}) {
 	if !debugging {
